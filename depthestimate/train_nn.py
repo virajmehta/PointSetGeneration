@@ -17,6 +17,10 @@ import cPickle as pickle
 
 from BatchFetcher import *
 
+HEIGHT=192
+WIDTH=256
+POINTCLOUDSIZE=16384
+batch_size=32
 
 lastbatch=None
 lastconsumed=FETCH_BATCH_SIZE
@@ -174,65 +178,36 @@ def model_fn(features, labels, mode, params):
         train_op=train_op,
         eval_metric_ops=loss_nodecay)
 
+def _parse_function(example_proto):
+        features = {'image_raw': tf.FixedLenFeature([], tf.string),
+                    'ptcloud_raw': tf.FixedLenFeature([], tf.string)}
+        parsed_features = tf.parse_single_example(example_proto, features)
+        image = tf.decode_raw(parsed_features['image_raw'], tf.float32)
+        image_shape = (HEIGHT, WIDTH, 4)
+        image =tf.reshape(image, image_shape)
+        ptcloud = tf.decode_raw(parsed_features['ptcloud_raw'], tf.float32)
+        ptcloud_shape = (POINTCLOUDSIZE, 3)
+        ptcloud = tf.reshape(ptcloud, ptcloud_shape)
+        return {'images': image}, ptcloud
 
-def main(resourceid,keyname):
-	if not os.path.exists(dumpdir):
-		os.system("mkdir -p %s"%dumpdir)
-	img_inp,x,pt_gt,loss,optimizer,batchno,batchnoinc,mindist,loss_nodecay,dists_forward,dists_backward,dist0=build_graph(resourceid)
-	config=tf.ConfigProto()
-	config.gpu_options.allow_growth=True
-	config.allow_soft_placement=True
-	saver=tf.train.Saver()
-	with tf.Session(config=config) as sess,\
-				open('%s/%s.log'%(dumpdir,keyname),'a') as fout:
-		sess.run(tf.global_variables_initializer())
-		trainloss_accs=[0,0,0]
-		trainloss_acc0=1e-9
-		validloss_accs=[0,0,0]
-		validloss_acc0=1e-9
-		lastsave=time.time()
-		bno=sess.run(batchno)
-		fetchworker.bno=bno//(FETCH_BATCH_SIZE/BATCH_SIZE)
-		fetchworker.start()
-		while bno<300000:
-			t0=time.time()
-			data,ptcloud,validating=fetch_batch()
-			t1=time.time()
-			validating=validating[0]!=0
-			if not validating:
-				_,pred,total_loss,trainloss,trainloss1,trainloss2,distmap_0=sess.run([optimizer,x,loss,loss_nodecay,dists_forward,dists_backward,dist0],
-					feed_dict={img_inp:data,pt_gt:ptcloud})
-				trainloss_accs[0]=trainloss_accs[0]*0.99+trainloss
-				trainloss_accs[1]=trainloss_accs[1]*0.99+trainloss1
-				trainloss_accs[2]=trainloss_accs[2]*0.99+trainloss2
-				trainloss_acc0=trainloss_acc0*0.99+1
-			else:
-				_,pred,total_loss,validloss,validloss1,validloss2,distmap_0=sess.run([batchnoinc,x,loss,loss_nodecay,dists_forward,dists_backward,dist0],
-					feed_dict={img_inp:data,pt_gt:ptcloud})
-				validloss_accs[0]=validloss_accs[0]*0.997+validloss
-				validloss_accs[1]=validloss_accs[1]*0.997+validloss1
-				validloss_accs[2]=validloss_accs[2]*0.997+validloss2
-				validloss_acc0=validloss_acc0*0.997+1
-			t2=time.time()
-			down=2
+def input_fn():
+    filenames = ['../dataset/data.tfrecord']
+    dataset = tf.contrib.data.TFRecordDataset(filenames)
+    dataset = dataset.map(_parse_function)
+    dataset = dataset.shuffle(buffer_size=1000)
+    dataset = dataset.batch(BATCH_SIZE)
+    dataset = dataset.repeat()
+    iterator = dataset.make_one_shot_iterator()
+    features, labels= iterator.get_next()
+    return features, labels
 
-			bno=sess.run(batchno)
-			if not validating:
-				showloss=trainloss
-				showloss1=trainloss1
-				showloss2=trainloss2
-			else:
-				showloss=validloss
-				showloss1=validloss1
-				showloss2=validloss2
-			print >>fout,bno,trainloss_accs[0]/trainloss_acc0,trainloss_accs[1]/trainloss_acc0,trainloss_accs[2]/trainloss_acc0,showloss,showloss1,showloss2,validloss_accs[0]/validloss_acc0,validloss_accs[1]/validloss_acc0,validloss_accs[2]/validloss_acc0,total_loss-showloss
-			if bno%128==0:
-				fout.flush()
-			if time.time()-lastsave>900:
-				saver.save(sess,'%s/'%dumpdir+keyname+".ckpt")
-				lastsave=time.time()
-			print bno,'t',trainloss_accs[0]/trainloss_acc0,trainloss_accs[1]/trainloss_acc0,trainloss_accs[2]/trainloss_acc0,'v',validloss_accs[0]/validloss_acc0,validloss_accs[1]/validloss_acc0,validloss_accs[2]/validloss_acc0,total_loss-showloss,t1-t0,t2-t1,time.time()-t0,fetchworker.queue.qsize()
-		saver.save(sess,'%s/'%dumpdir+keyname+".ckpt") 
+
+def main():
+    if not os.path.exists(dumpdir):
+	   os.system("mkdir -p %s"%dumpdir)
+    model_params = {'batch_size': batch_size}
+    psgn = tf.estimator.Estimator(model_fn=model_fn, params=model_params)
+    psgn.train(input_fn=input_fn, steps=300000)
 
 def dumppredictions(resourceid,keyname,valnum):
 	img_inp,x,pt_gt,loss,optimizer,batchno,batchnoinc,mindist,loss_nodecay,dists_forward,dists_backward,dist0=build_graph(resourceid)
@@ -263,7 +238,8 @@ def dumppredictions(resourceid,keyname,valnum):
 	fout.close()
 
 if __name__=='__main__':
-	resourceid = 0
+    main()
+'''resourceid = 0
 	datadir,dumpdir,cmd,valnum="data","dump","predict",3
 	for pt in sys.argv[1:]:
 		if pt[:5]=="data=":
@@ -293,3 +269,4 @@ if __name__=='__main__':
 			assert False,"format wrong"
 	finally:
 		stop_fetcher()
+    '''

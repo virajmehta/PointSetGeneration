@@ -1,6 +1,5 @@
 import sys
 import numpy as np
-import cv2
 import random
 import math
 import os
@@ -11,7 +10,7 @@ import threading
 import Queue
 import sys
 import cPickle as pickle
-import show3d
+import tensorflow as tf
 
 FETCH_BATCH_SIZE=32
 BATCH_SIZE=32
@@ -32,7 +31,7 @@ def _int64_feature(value):
 
 
 def write_records(dirname_in, dirname_out):
-	record_fn = os.path.join(dirname_out, '%d.tfrecord'%self.idnum)
+	record_fn = os.path.join(dirname_out, 'data.tfrecord')
 	writer = tf.python_io.TFRecordWriter(record_fn)
 	for fn in os.listdir(dirname_in):
 		path = os.path.join(dirname_in, fn)
